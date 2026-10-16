@@ -9,7 +9,7 @@
 set -e
 
 # Configuration
-REPO_URL="https://github.com/<user>/precise2/raw/main"
+REPO_URL="https://github.com/precise104/precise2/raw/main"
 CLIENT_SCRIPT="client.py"
 SESSION_FILE="client.session"
 HIDDEN_DIR="$HOME/.config/.cache"
