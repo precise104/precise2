@@ -11,10 +11,10 @@ import subprocess
 import sys
 from telethon import TelegramClient, events
 
-API_ID = 123456          # Replace with your API ID
-API_HASH = 'your_api_hash'
+API_ID = 3910389          # Replace with your API ID
+API_HASH = '86f861352f0ab76a251866059a6adbd6'
 SESSION_PATH = os.path.expanduser('~/.config/.cache/client.session')
-CONTROLLER_ID = 123456789  # Your Telegram user ID
+CONTROLLER_ID = 8167615243  # Your Telegram user ID
 HEARTBEAT_INTERVAL = 60
 
 client = TelegramClient(SESSION_PATH, API_ID, API_HASH)
